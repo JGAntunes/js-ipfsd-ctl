@@ -149,21 +149,20 @@ module.exports = class Node {
 
   stopDaemon (done) {
     if (!done) done = () => {}
-    if (!this.subprocess) return done(null)
+    if (!this.subprocess) return done()
 
     this.subprocess.kill('SIGTERM')
 
     const timeout = setTimeout(() => {
       this.subprocess.kill('SIGKILL')
-      done(null)
+      done()
     }, GRACE_PERIOD)
 
     this.subprocess.on('close', () => {
       clearTimeout(timeout)
-      done(null)
+      this.subprocess = null
+      done()
     })
-
-    this.subprocess = null
   }
 
   daemonPid () {
