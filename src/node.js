@@ -9,17 +9,19 @@ const rimraf = require('rimraf')
 const shutdown = require('shutdown')
 const path = require('path')
 const join = path.join
-
-const rootPath = process.env.testpath ? process.env.testpath : __dirname
+const bl = require('bl')
 
 const ipfsDefaultPath = findIpfsExecutable()
 
 const GRACE_PERIOD = 7500 // amount of ms to wait before sigkill
 
 function findIpfsExecutable () {
-  let npm3Path = path.join(rootPath, '../../', '/go-ipfs-dep/go-ipfs/ipfs')
+  const rootPath = process.env.testpath ? process.env.testpath : __dirname
 
-  let npm2Path = path.join(rootPath, '../', 'node_modules/go-ipfs-dep/go-ipfs/ipfs')
+  const appRoot = path.join(rootPath, '..')
+  const depPath = path.join('go-ipfs-dep', 'go-ipfs', 'ipfs')
+  const npm3Path = path.join(appRoot, '../', depPath)
+  const npm2Path = path.join(appRoot, 'node_modules', depPath)
 
   try {
     fs.statSync(npm3Path)
@@ -43,8 +45,9 @@ function configureNode (node, conf, done) {
 
 // Consistent error handling
 function parseConfig (path, done) {
+  const file = fs.readFileSync(join(path, 'config'))
+
   try {
-    const file = fs.readFileSync(join(path, 'config'))
     const parsed = JSON.parse(file)
     done(null, parsed)
   } catch (err) {
@@ -66,13 +69,12 @@ module.exports = class Node {
   }
 
   _run (args, envArg, done) {
-    let result = ''
     run(this.exec, args, envArg)
       .on('error', done)
-      .on('data', (data) => {
-        result += data
-      })
-      .on('end', () => done(null, result.trim()))
+      .pipe(bl((err, result) => {
+        if (err) return done(err)
+        done(null, result.toString().trim())
+      }))
   }
 
   init (initOpts, done) {
@@ -80,7 +82,6 @@ module.exports = class Node {
       done = initOpts
       initOpts = {}
     }
-    let buf = ''
 
     const keySize = initOpts.keysize || 2048
 
@@ -91,17 +92,18 @@ module.exports = class Node {
 
     run(this.exec, ['init', '-b', keySize], {env: this.env})
       .on('error', done)
-      .on('data', (data) => {
-        buf += data
-      })
-      .on('end', () => {
+      .pipe(bl((err, buf) => {
+        if (err) return done(err)
+
         configureNode(this, this.opts, (err) => {
           if (err) return done(err)
+
           this.clean = false
           this.initialized = true
+
           done(null, this)
         })
-      })
+      }))
 
     if (this.disposable) {
       shutdown.addHandler('disposable', 1, this.shutdown.bind(this))
@@ -122,17 +124,18 @@ module.exports = class Node {
     parseConfig(this.path, (err, conf) => {
       if (err) return done(err)
 
+      const errorHandler = (err) => {
+        if (String(err).match('daemon is running')) {
+          // we're good
+          done(null, ipfs(conf.Addresses.API))
+        } else if (String(err).match('non-zero exit code')) {
+          // ignore when kill -9'd
+        } else {
+          done(err)
+        }
+      }
       this.subprocess = run(this.exec, ['daemon'], {env: this.env})
-        .on('error', (err) => {
-          if (String(err).match('daemon is running')) {
-            // we're good
-            done(null, ipfs(conf.Addresses.API))
-          } else if (String(err).match('non-zero exit code')) {
-            // ignore when kill -9'd
-          } else {
-            done(err)
-          }
-        })
+        .on('error', errorHandler)
         .on('data', (data) => {
           const match = String(data).trim().match(/API server listening on (.*)/)
           if (match) {
@@ -141,6 +144,9 @@ module.exports = class Node {
             const api = ipfs(this.apiAddr)
             api.apiHost = addr.address
             api.apiPort = addr.port
+
+            // We are happyly listening, so let's not hide other errors
+            this.subprocess.removeListener('error', errorHandler)
             done(null, api)
           }
         })
@@ -181,7 +187,7 @@ module.exports = class Node {
   setConfig (key, value, done) {
     run(this.exec, ['config', key, value, '--json'], {env: this.env})
       .on('error', done)
-      .on('data', (data) => {})
+      .on('data', () => {})
       .on('end', () => done())
   }
 
