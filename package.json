@@ -43,6 +43,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "bl": "^1.1.2",
     "go-ipfs-dep": "0.4.2",
     "ipfs-api": "^4.1.0",
     "multiaddr": "^2.0.0",
